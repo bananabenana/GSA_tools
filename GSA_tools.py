@@ -133,7 +133,7 @@ def get_search_result_count(driver):
 
 def find_latest_runinfo(download_dir: Path, timeout: int = 60):
     """
-    Wait for RunInfo CSV/TXT/TSV to appear in the download directory.
+    Wait for RunInfo.csv to appear in the download directory.
     Returns Path object or None if not found.
     """
     print("[INFO] Waiting for RunInfo download...")
@@ -344,6 +344,9 @@ def write_biosample_metadata_parallel(runinfo_csv, output_tsv, threads=4, headle
     all_keys = ["BioSample"] + sorted(k for k in all_keys if k != "BioSample")
 
     df = pd.DataFrame([{k: r.get(k, "") for k in all_keys} for r in records])
+    # Drop nested Attributes column
+    if "Attributes" in df.columns:
+        df = df.drop(columns=["Attributes"])
     df.to_csv(output_tsv, sep="\t", index=False)
     print(f"[INFO] BioSample metadata written to {output_tsv}")
 
