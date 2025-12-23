@@ -114,7 +114,7 @@ The original downloaded RunInfo from GSA (clipped for parsing). Not that useful 
 
 
 ## Requirements
-For specific packages, see [environment.yaml](environment.yml)
+For specific packages, see [environment.yml](environment.yml)
 - Chrome v124.0
 - Python 3.14.2
 - conda/mamba
