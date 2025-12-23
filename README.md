@@ -21,6 +21,9 @@ cd GSA_tools
 # Use mamba (or optionally conda to install the required packages)
 mamba env create -f environment.yml
 
+# Activate environment
+mamba activate GSA_tools_env
+
 # Test installation
 python GSA_tools.py -h
 ```
