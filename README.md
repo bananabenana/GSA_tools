@@ -19,7 +19,7 @@ git clone https://github.com/bananabenana/GSA_tools
 cd GSA_tools
 
 # Use mamba (or optionally conda to install the required packages)
-mamba env create -f environment.yaml
+mamba env create -f environment.yml
 
 # Test installation
 python GSA_tools.py -h
