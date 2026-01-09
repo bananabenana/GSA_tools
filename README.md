@@ -32,13 +32,32 @@ python GSA_tools.py -h
 Download all readsets from the Proteus genus of bacteria.
 ```bash
 python GSA_tools.py \
-  --input test_data/input/species_list.txt \
+  --taxa test_data/input/species_list.txt \
   --download_dir reads_output \
   --threads 8 # Do not exceed 8 concurrent threads, as GSA will start blocking your download attempts
 ```
 
+Dry run to obtain metadata but download no reads
+```bash
+python GSA_tools.py \
+  --taxa test_data/input/species_list.txt \
+  --download_dir reads_output \
+  --dry_run \
+  --threads 8 # Do not exceed 8 concurrent threads, as GSA will start blocking your download attempts
+```
+
+Download metadata using BioSample IDs
+```bash
+python GSA_tools.py \
+  --biosample test_data/input/biosample_list.txt \
+  --download_dir biosample_metadata \
+  --threads 8 # Do not exceed 8 concurrent threads, as GSA will start blocking your download attempts
+```
+
 ## Inputs
-All you need is a list of species or genera (one per line) in a .txt file. See example species_list.txt(test_data/input/species_list.txt) This will be used to search GSA and download reads from those taxa.
+For the `--taxa` option, all you need is a list of species or genera (one per line) in a .txt file. See example [species_list.txt](test_data/input/species_list.txt) This will be used to search GSA and download reads from those taxa.
+For the `--biosample` option, all  you need is a list of BioSample IDs (one per line) in a .txt file
+
 
 ## Outputs
 GSA_tools will output the following directory structure:
