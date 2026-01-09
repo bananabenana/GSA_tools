@@ -3,8 +3,15 @@
 Downloads genome readsets and BioSample metadata from GSA (https://ngdc.cncb.ac.cn/)
 
 Usage:
+    # Download reads and metadata from a list of species/genera
     python GSA_tools.py \
-        --input species_list.txt \
+        --taxa species_list.txt \
+        --download_dir DLs \
+        --threads 4
+
+    # Download metadata from a list of BioSample IDs
+    python GSA_tools.py \
+        --biosample biosample_list.txt \
         --download_dir DLs \
         --threads 8
 
@@ -17,6 +24,8 @@ Requirements:
         - mamba install -y -n gsa_tools conda-forge::python-chromedriver-binary
     - Chrome v124.0
 """
+
+__version__ = "1.0.2"
 
 import argparse
 import os
@@ -42,13 +51,21 @@ from selenium.common.exceptions import TimeoutException
 ### Selenium functions
 
 def parse_args():
-    import argparse
-    ap = argparse.ArgumentParser(description="GSA species downloader")
-    ap.add_argument("-i", "--input", required=True, help="Path to species list")
+    ap = argparse.ArgumentParser(description="GSA downloader")
+
+    ap.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}"
+    )
+
+    ap.add_argument("-t", "--taxa", help="Path to taxa/species list. One line per taxa. Do not use with `--biosample` option")
+    ap.add_argument("-b", "--biosample", help="Path to BioSample list. One line per BioSample ID. Allows you to get metadata for BioSamples. Do not use with `--taxa` option")
     ap.add_argument("-d", "--download_dir", required=True, help="Download directory")
-    ap.add_argument("-t", "--threads", type=int, default=8, help="Parallel threads")
+    ap.add_argument("--threads", type=int, default=8, help="Parallel threads. Do not use more than 8 or you will get connection refused from GSA")
     ap.add_argument("--no-headless", action="store_true", help="Run Chrome with GUI")
     ap.add_argument("--dry_run", action="store_true", help="Skip FASTQ downloads")
+
     return ap.parse_args()
 
 
@@ -244,109 +261,66 @@ def filter_runinfo_by_scientific_name(runinfo_path, genome):
     print(f"[INFO] Filtered RunInfo by ScientificName for '{genome}': {runinfo_path}")
 
 
-def scrape_biosample_metadata(driver, biosample):
-    """Scrape metadata for a single BioSample."""
-    url = f"https://ngdc.cncb.ac.cn/biosample/browse/{biosample}"
-    driver.get(url)
-
-    try:
-        WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located((By.ID, "attribute_table"))
-        )
-    except TimeoutException:
-        print(f"[WARN] BioSample page not found: {biosample}")
-        return None
-
-    record = {"BioSample": biosample}
-
-    # Parse main attribute table
-    rows = driver.find_elements(By.XPATH, "//table[@id='attribute_table']//tr")
-    for row in rows:
-        try:
-            key = row.find_element(By.TAG_NAME, "th").text.strip()
-            val = row.find_element(By.TAG_NAME, "td").text.strip()
-            key = re.sub(r"\s+", "_", key)
-            if val:  # only keep non-empty
-                record[key] = val
-        except Exception:
-            continue
-
-    # Parse extra metadata tables (Release date, Submitter, etc.)
-    extra_rows = driver.find_elements(
-        By.XPATH,
-        "//tr[th and td and not(ancestor::table[@id='attribute_table'])]"
-    )
-    for row in extra_rows:
-        try:
-            key = row.find_element(By.TAG_NAME, "th").text.strip()
-            val = row.find_element(By.TAG_NAME, "td").text.strip()
-            key = re.sub(r"\s+", "_", key)
-            if val:
-                record[key] = val
-        except Exception:
-            continue
-
-    return record
-
-
 def write_biosample_metadata_parallel(runinfo_csv, output_tsv, threads=4, headless=True):
-    """Scrape BioSample metadata and write clean TSV with no empty columns."""
     biosamples = get_biosamples_from_runinfo(runinfo_csv)
+    biosamples = sorted(set(biosamples))  # extra safety
+
     print(f"[INFO] Scraping metadata for {len(biosamples)} BioSamples using {threads} threads...")
 
-    # Start one Chrome driver
+    records = []
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from selenium.webdriver.chrome.service import Service
     from selenium.webdriver.chrome.options import Options
-    service = Service()
-    opts = Options()
-    if headless:
-        opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--remote-debugging-port=9222")
-    driver = webdriver.Chrome(service=service, options=opts)
-    driver.set_page_load_timeout(90)
 
-    # Scrape in threads (shared driver)
-    records = []
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    def _task(bs):
+    def _scrape_task(bs):
+        opts = Options()
+        if headless:
+            opts.add_argument("--headless=new")
+
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-setuid-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        # opts.add_argument("--remote-debugging-port=0")
+
+        driver = webdriver.Chrome(service=Service(), options=opts)
+        driver.set_page_load_timeout(90)
+
         try:
             rec = scrape_biosample_metadata(driver, bs)
             if rec:
-                # Remove empty columns
-                rec = {k: v for k, v in rec.items() if v.strip()}
-                # Ensure BioSample first
+                rec = {k: v for k, v in rec.items() if isinstance(v, str) and v.strip()}
                 rec = {"BioSample": rec.pop("BioSample"), **rec}
             return rec
         except Exception as e:
             print(f"[ERROR] Failed {bs}: {e}")
             return None
+        finally:
+            driver.quit()
 
     with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = {executor.submit(_task, bs): bs for bs in biosamples}
+        futures = [executor.submit(_scrape_task, bs) for bs in biosamples]
         for future in as_completed(futures):
             res = future.result()
             if res:
                 records.append(res)
 
-    driver.quit()
-
     if not records:
         print("[INFO] No BioSample metadata retrieved")
         return
 
-    # Build DataFrame with union of all keys
-    all_keys = set()
-    for rec in records:
-        all_keys.update(rec.keys())
-    all_keys = ["BioSample"] + sorted(k for k in all_keys if k != "BioSample")
+    # Stable column union
+    all_keys = {"BioSample"}
+    for r in records:
+        all_keys.update(r.keys())
 
+    all_keys = ["BioSample"] + sorted(k for k in all_keys if k != "BioSample")
     df = pd.DataFrame([{k: r.get(k, "") for k in all_keys} for r in records])
-    # Drop nested Attributes column
-    if "Attributes" in df.columns:
-        df = df.drop(columns=["Attributes"])
+
+    # Explicitly drop nested garbage
+    df = df.drop(columns=[c for c in df.columns if c.lower() == "attributes"], errors="ignore")
+
     df.to_csv(output_tsv, sep="\t", index=False)
     print(f"[INFO] BioSample metadata written to {output_tsv}")
 
@@ -515,10 +489,8 @@ def scrape_biosample_metadata(driver, biosample):
         print(f"[WARN] BioSample page not found: {biosample}")
         return None
 
-    # Start record with BioSample ID as first column
     record = {"BioSample": biosample}
 
-    # Extract rows from the attributes table
     rows = driver.find_elements(By.XPATH, "//table[@id='attribute_table']//tr")
     for row in rows:
         try:
@@ -529,7 +501,6 @@ def scrape_biosample_metadata(driver, biosample):
         except Exception:
             continue
 
-    # Extra metadata outside attribute_table (Release date, Submitter, etc.)
     extra_rows = driver.find_elements(
         By.XPATH,
         "//table[@class='table2 table2-border']//tr[th and td and not(ancestor::table[@id='attribute_table'])]"
@@ -539,13 +510,88 @@ def scrape_biosample_metadata(driver, biosample):
             key = row.find_element(By.TAG_NAME, "th").text.strip()
             val = row.find_element(By.TAG_NAME, "td").text.strip()
             key = re.sub(r"\s+", "_", key)
-            # Avoid overwriting BioSample
             if key != "Accession":
                 record[key] = val
         except Exception:
             continue
 
     return record
+
+def process_biosamples(biosample_txt, output_dir, threads=4, headless=True):
+    """
+    Scrape BioSample metadata from a list of BioSamples in a TXT file.
+    Writes a combined TSV to output_dir / "biosample_metadata.tsv".
+    Each thread gets its own Selenium driver to avoid overwriting issues.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    with open(biosample_txt) as f:
+        biosamples = [l.strip() for l in f if l.strip()]
+
+    print(f"[INFO] Scraping {len(biosamples)} BioSamples with {threads} threads...")
+
+    records = []
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.chrome.options import Options
+
+    def _scrape_task(bs_id):
+        # Each thread gets its own driver
+        opts = Options()
+        if headless:
+            opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-setuid-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        # opts.add_argument("--remote-debugging-port=0")  # avoid conflicts
+
+        driver = webdriver.Chrome(service=Service(), options=opts)
+        driver.set_page_load_timeout(90)
+
+        try:
+            rec = scrape_biosample_metadata(driver, bs_id)
+            if rec:
+                # Remove empty columns
+                rec = {k: v for k, v in rec.items() if v.strip()}
+                # Ensure BioSample is first
+                rec = {"BioSample": rec.pop("BioSample"), **rec}
+            return rec
+        except Exception as e:
+            print(f"[ERROR] Failed scraping {bs_id}: {e}")
+            return None
+        finally:
+            driver.quit()
+
+    # Launch threads
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = {executor.submit(_scrape_task, bs): bs for bs in biosamples}
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                records.append(res)
+
+    if not records:
+        print("[INFO] No BioSample metadata retrieved")
+        return
+
+    # Collect all keys for consistent DataFrame
+    all_keys = set()
+    for r in records:
+        all_keys.update(r.keys())
+    all_keys = ["BioSample"] + sorted(k for k in all_keys if k != "BioSample")
+
+    df = pd.DataFrame([{k: r.get(k, "") for k in all_keys} for r in records])
+
+    # Drop Attributes column if present
+    if "Attributes" in df.columns:
+        df = df.drop(columns=["Attributes"])
+
+    out_tsv = output_dir / "biosample_metadata.tsv"
+    df.to_csv(out_tsv, sep="\t", index=False)
+    print(f"[INFO] BioSample metadata written to {out_tsv}")
 
 
 ### Per-genome workflow
@@ -627,7 +673,12 @@ def process_genome(driver, genome, download_dir, threads, dry_run=False):
         return genome, 0, False
 
     biosample_meta_tsv = species_dir / f"{genome_fs}_biosample_metadata.tsv"
-    write_biosample_metadata_parallel(final_csv, biosample_meta_tsv, threads=threads, headless=True)
+    write_biosample_metadata_parallel(
+        final_csv,
+        biosample_meta_tsv,
+        threads=2,   # hard cap Selenium
+        headless=True
+    )
 
     if dry_run:
         print(f"[INFO] Dry run enabled: skipping FASTQ downloads and manifest generation for {genome}")
@@ -643,20 +694,27 @@ def process_genome(driver, genome, download_dir, threads, dry_run=False):
 
 def main():
     args = parse_args()
-
     dl = Path(args.download_dir).absolute()
     dl.mkdir(parents=True, exist_ok=True)
-
     headless = not args.no_headless
+
+    if not args.taxa and not args.biosample:
+        print("[ERROR] Must provide at least --taxa or --biosample")
+        return
+
+    # Start a shared Chrome driver
     driver = start_chrome(dl, headless=headless)
 
-    with open(args.input) as f:
-        genomes = [l.strip() for l in f if l.strip()]
-
     try:
-        for g in genomes:
-            # Process RunInfo & metadata (downloads skipped if dry_run)
-            result = process_genome(driver, g, dl, args.threads, dry_run=args.dry_run)
+        if args.taxa:
+            with open(args.taxa) as f:
+                genomes = [l.strip() for l in f if l.strip()]
+            for g in genomes:
+                process_genome(driver, g, dl, threads=args.threads, dry_run=args.dry_run)
+
+        if args.biosample:
+            process_biosamples(args.biosample, dl / "biosamples",
+                               threads=args.threads, headless=headless)
 
     finally:
         driver.quit()
