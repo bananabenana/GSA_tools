@@ -51,7 +51,7 @@ Download metadata using BioSample IDs
 python GSA_tools.py \
   --biosample test_data/input/biosample_list.txt \
   --download_dir biosample_metadata \
-  --threads 8 # Do not exceed 8 concurrent threads, as GSA will start blocking your download attempts
+  --threads 2 # Program will not exceed 2 concurrent threads to prevent issues 
 ```
 
 ## Inputs
